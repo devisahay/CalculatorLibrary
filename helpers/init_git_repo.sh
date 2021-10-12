@@ -5,6 +5,7 @@
 # Fetches master branch from GitHub and "resets" local changes to be relative to it,
 # so we can diff what changed relatively to master branch.
 
+echo "initiated.."
 git init
 git config user.email "devisahay.mishra@learningmate.com"
 git config user.name "devisahay.mishra"
@@ -25,3 +26,4 @@ then
 fi
 
 echo "successfully rebased PR  #${PR_NUMBER} on master"
+echo "Working properly."
