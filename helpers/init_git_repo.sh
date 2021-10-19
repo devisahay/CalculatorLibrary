@@ -24,7 +24,7 @@ git init
 git config user.email "devisahay.mishra@learningmate.com"
 git config user.name "Devisahay Mishra"
 
-git commit -m "empty commit"
+git commit -m "empty commit again"
 git remote add origin "${BASE_REPO_URL}"
 git fetch origin master
 
