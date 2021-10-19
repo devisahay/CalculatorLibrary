@@ -12,42 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 steps:
-- name: 'gcr.io/cloud-builders/git'
-  entrypoint: 'bash'
+# [Dataflow]
+# Stage JARs on GCS.
+- name: gcr.io/cloud-builders/gsutil
   args: [
-    './helpers/init_git_repo.sh'
-  ]
-  env: [
-    'COMMIT_SHA=${COMMIT_SHA}',
-    'BASE_REPO_URL=https://github.com/jaketf/ci-cd-for-data-processing-workflow.git',
-    'BASE_BRANCH=${_BASE_BRANCH}',
-    'PR_NUMBER=${_PR_NUMBER}'
-  ]
-  id: 'init-git-repo'
-# Merge Master because this is a post-commit
-- name: 'gcr.io/cloud-builders/git'
-  args: ['merge', 'origin/master']
-  waitFor: ['init-git-repo']
-  id: 'merge-master'
-# Run linters and relevant cloudbuilds (we have to do this again in case merge
-# broke a unit test or static check)
-# Individual cloudbuild.yaml's  (e.g. for a dataflow pipeline) are responsible
-# for pushing their own artifacts to the appropriate gcs location in the
-# artifacts project and updating the necessary references in composer.
-- name: 'google/cloud-sdk'
-  waitFor: ['merge-master']
-  entrypoint: 'bash'
-  args: [
-    './helpers/run_relevant_cloudbuilds.sh',
-    'cloudbuild.yaml',
-    '--substitutions=_SHORT_SHA=${SHORT_SHA},_COMPOSER_REGION=${_COMPOSER_REGION},_COMPOSER_ENV_NAME=${_COMPOSER_ENV_NAME},_DATAFLOW_JAR_BUCKET=${_DATAFLOW_JAR_BUCKET}'
-  ]
-  id: 'run-builds'
+          'cp',
+          'gs://${_DATAFLOW_ARTIFACT_BUCKET}/${_CI_BUILD_ID}/wordcount.jar'
+          'gs://${_DATAFLOW_JAR_BUCKET}/wordcount.jar']
+  id: 'deploy-wordcount-jar'
 # [BigQuery]
-# Copy SQL to DAGs folder.
-- name: 'google/cloud-sdk'
-  waitFor: ['run-builds']
-  entrypoint: 'gsutil'
+# Copy SQL to DAGs folder in prod.
+- name: gcr.io/cloud-builders/gsutil
+  waitFor: ['test-sql-queries']
   args: [
           'rsync','-r', '-d',
           'sql', '${_COMPOSER_DAG_BUCKET}dags/sql'
@@ -55,13 +31,13 @@ steps:
   dir: './bigquery/'
   id: 'deploy-sql-queries-for-composer'
 # [Composer]
-# Render AirflowVariables.json
+# Render AirflowVariables.json with production values
 - name: 'gcr.io/${PROJECT_ID}/envsubst'
   waitFor: ['-']
   env: [
           "GCP_PROJECT_ID=${PROJECT_ID}",
           "COMPOSER_REGION=${_COMPOSER_REGION}",
-          "DATAFLOW_JAR_BUCKET=${_DATAFLOW_ARTIFACTS_BUCKET}",
+          "DATAFLOW_JAR_BUCKET=${_DATAFLOW_JAR_BUCKET}",
           "INPUT_BUCKET=${_WORDCOUNT_INPUT_BUCKET}",
           "REF_BUCKET=${_WORDCOUNT_REF_BUCKET}",
           "RESULT_BUCKET=${_WORDCOUNT_RESULT_BUCKET}",
@@ -70,10 +46,9 @@ steps:
   args: ['AirflowVariables.json']
   dir: './composer/config'
   id: 'render-airflow-variables'
-# Add .airflowignore to GCS DAGs folder.
-- name: 'google/cloud-sdk'
-  waitFor: ['run-builds']
-  entrypoint: 'gcloud'
+# Add .airflowignore to GCS prod DAGs folder.
+- name: gcr.io/cloud-builders/gcloud
+  waitFor: ['run-unit-tests']
   args: [
           'composer', 'environments', 'storage', 'dags', 'import',
           '--source','.airflowignore',
@@ -82,31 +57,9 @@ steps:
         ]
   dir: './composer/dags/'
   id: 'deploy-airflowignore'
-# Stage files for running the example.
-- name: 'google/cloud-sdk'
-  waitFor: ['-']
-  entrypoint: 'gsutil'
-  args: [
-          'cp',
-          'support-files/input.txt',
-          'gs://${_WORDCOUNT_INPUT_BUCKET}'
-        ]
-  dir: './composer/dags'
-  id: 'deploy-test-input-file'
-- name: 'google/cloud-sdk'
-  waitFor: ['-']
-  entrypoint: 'gsutil'
-  args: [
-          'cp',
-          'support-files/ref.txt',
-          'gs://${_WORDCOUNT_REF_BUCKET}'
-        ]
-  dir: './composer/dags'
-  id: 'deploy-test-ref-file'
 # Stage AirflowVariables.json to data directory to be synced to workers.
-- name: 'google/cloud-sdk'
+- name: gcr.io/cloud-builders/gcloud
   waitFor: ['render-airflow-variables']
-  entrypoint: 'gcloud'
   args: [
           'composer', 'environments', 'storage', 'data', 'import',
           '--location=${_COMPOSER_REGION}',
@@ -117,9 +70,8 @@ steps:
   dir: './composer/config/'
   id: 'stage-airflow-variables'
 # Import AirflowVariables.json 
-- name: 'google/cloud-sdk'
+- name: gcr.io/cloud-builders/gcloud
   waitFor: ['stage-airflow-variables']
-  entrypoint: 'gcloud'
   args: [
           'composer', 'environments', 'run', 
           '--location=${_COMPOSER_REGION}',
@@ -128,10 +80,18 @@ steps:
           '--import', '/home/airflow/gcs/data/config/AirflowVariables.json'
         ] 
   id: 'import-airflow-variables'
+# Override JAR reference variable to the artifact built in this build.
+- name: gcr.io/cloud-builders/gcloud
+  args: [
+          'composer', 'environments', 'run',
+          '--location', '${_COMPOSER_REGION}',
+          '${_COMPOSER_ENV_NAME}', 
+          'variables', '--', 
+          '--set', 'dataflow_jar_file_test', 'wordcount.jar'
+        ]
+  id: 'set-composer-test-jar-ref'
 # Sync plugins to GCS plugins dir
-- name: 'google/cloud-sdk'
-  waitFor: ['run-builds']
-  entrypoint: 'gsutil'
+- name: gcr.io/cloud-builders/gsutil
   args: [
           'rsync','-r', '-d',
           'plugins/',
@@ -139,10 +99,9 @@ steps:
         ]
   dir: './composer/'
   id: 'deploy-custom-plugins'
-# Sync DAGs to data dir for integration test parsing in target Composer Environment.
-- name: 'google/cloud-sdk'
+# Sync DAGs to data dir for integration test parsing in  target Composer Environment.
+- name: gcr.io/cloud-builders/gsutil
   waitFor: ['deploy-custom-plugins']
-  entrypoint: 'gsutil'
   args: [
           'rsync','-r', '-d',
           'dags/',
@@ -151,9 +110,8 @@ steps:
   dir: './composer/'
   id: 'stage-for-integration-test'
 # Run integration tests parsing in target Composer Environment.
-- name: 'google/cloud-sdk'
+- name: gcr.io/cloud-builders/gcloud
   waitFor: ['stage-for-integration-test']
-  entrypoint: 'gcloud'
   args: [
           'composer', 'environments', 'run', 
           '--location', '${_COMPOSER_REGION}',
@@ -163,42 +121,22 @@ steps:
         ] 
   id: 'dag-parse-integration-test'
 # Clean up. 
-- name: 'google/cloud-sdk'
+- name: gcr.io/cloud-builders/gsutil
   waitFor: ['dag-parse-integration-test']
-  entrypoint: 'gsutil'
   args: [
           '-m', 'rm','-r',
           '${_COMPOSER_DAG_BUCKET}data/test-dags/$BUILD_ID'
         ]
   dir: './composer/'
   id: 'clean-up-data-dir-dags'
-# pull dags deployer golang app.
-- name: gcr.io/cloud-builders/docker
-  waitFor: ['-']
-  entrypoint: 'bash'
-  args: [
-          '-c',
-          'docker pull gcr.io/${_ARTIFACTS_PROJECT_ID}/deploydags:latest || exit 0'
-        ]
-  id: 'pull-deploydags'
-# build with cache
-- name: gcr.io/cloud-builders/docker
-  waitFor: ['pull-deploydags']
-  dir: './composer/cloudbuild/go/dagsdeployer'
-  args: [
-          'build', 
-          '-t', 'gcr.io/${PROJECT_ID}/deploydags:latest',
-          '--cache-from', 'gcr.io/${_ARTIFACTS_PROJECT_ID}/deploydags:latest',
-          '.'
-        ]
-  id: 'build-deploydags'
 # Run dags deployer golang app. 
-- name: gcr.io/${PROJECT_ID}/deploydags
+- name: gcr.io/${_CI_PROJECT_ID}/deploydags
   dir: './composer'
   waitFor: [
-          'run-builds',
+          'run-style-and-unit-tests',
           'build-deploydags',
           'clean-up-data-dir-dags',
+          'deploy-wordcount-jar'
           ]
   args: [
           '-dagList=./config/running_dags.txt',
@@ -210,7 +148,5 @@ steps:
           '-replace'
         ]
   id: 'run-deploydags'
-artifacts:
-  images: ['gcr.io/${_ARTIFACTS_PROJECT_ID}/deploydags']
 options:
-  machineType: 'N1_HIGHCPU_32'  # For test and deploy dags parallelization.
+  machineType: 'N1_HIGHCPU_8'

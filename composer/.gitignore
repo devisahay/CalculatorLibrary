@@ -1,4 +1,4 @@
-target/
+deploydags
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -142,5 +142,3 @@ cython_debug/
 # static files generated from Django application using `collectstatic`
 media
 static
-
-.idea/
