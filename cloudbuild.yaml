@@ -25,28 +25,30 @@ steps:
   ]
   id: 'init-git-repo'
 # Merge Master because this is a post-commit
-- name: 'gcr.io/cloud-builders/git'
-  args: ['merge', 'origin/master']
-  waitFor: ['init-git-repo']
-  id: 'merge-master'
-# Run linters and relevant cloudbuilds (we have to do this again in case merge
-# broke a unit test or static check)
-# Individual cloudbuild.yaml's  (e.g. for a dataflow pipeline) are responsible
-# for pushing their own artifacts to the appropriate gcs location in the
-# artifacts project and updating the necessary references in composer.
-- name: 'google/cloud-sdk'
-  waitFor: ['merge-master']
-  entrypoint: 'bash'
-  args: [
-    './helpers/run_relevant_cloudbuilds.sh',
-    'cloudbuild.yaml',
-    '--substitutions=_SHORT_SHA=${SHORT_SHA},_COMPOSER_REGION=${_COMPOSER_REGION},_COMPOSER_ENV_NAME=${_COMPOSER_ENV_NAME},_DATAFLOW_JAR_BUCKET=${_DATAFLOW_JAR_BUCKET}'
-  ]
-  id: 'run-builds'
+# - name: 'gcr.io/cloud-builders/git'
+#   args: ['merge', 'origin/master']
+#   waitFor: ['init-git-repo']
+#   id: 'merge-master'
+# # Run linters and relevant cloudbuilds (we have to do this again in case merge
+# # broke a unit test or static check)
+# # Individual cloudbuild.yaml's  (e.g. for a dataflow pipeline) are responsible
+# # for pushing their own artifacts to the appropriate gcs location in the
+# # artifacts project and updating the necessary references in composer.
+
+# - name: 'google/cloud-sdk'
+#   waitFor: ['merge-master']
+#   entrypoint: 'bash'
+#   args: [
+#     './helpers/run_relevant_cloudbuilds.sh',
+#     'cloudbuild.yaml',
+#     '--substitutions=_SHORT_SHA=${SHORT_SHA},_COMPOSER_REGION=${_COMPOSER_REGION},_COMPOSER_ENV_NAME=${_COMPOSER_ENV_NAME},_DATAFLOW_JAR_BUCKET=${_DATAFLOW_JAR_BUCKET}'
+#   ]
+#   id: 'run-builds'
 # [BigQuery]
 # Copy SQL to DAGs folder.
 - name: 'google/cloud-sdk'
-  waitFor: ['run-builds']
+  waitFor: ['init-git-repo']
+  #waitFor: ['run-builds']
   entrypoint: 'gsutil'
   args: [
           'rsync','-r', '-d',
